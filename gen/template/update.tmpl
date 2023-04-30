@@ -1,0 +1,50 @@
+package gen
+
+import (
+    "github.com/maxshaw/orm"
+    "github.com/maxshaw/orm/qb"
+    {{range .Model.Imports}} {{"\n"}}{{print .}}{{end}}
+)
+
+type {{ .LowerName }}Update struct {
+    db orm.Executor
+
+    builder *orm.Builder
+    values  qb.H
+}
+
+{{range $i, $f := .Model.Fields}}
+func (u *{{ $.LowerName }}Update) Set{{ $f.Name }}(v {{ $f.Type }}) *{{ $.LowerName }}Update {
+    u.values["{{ $f.Column }}"] = v
+    return u
+}
+{{end}}
+
+func (u *{{ .LowerName }}Update) Where(a ...qb.Expr) *{{ .LowerName }}Update {
+    u.builder.Where(a...)
+    return u
+}
+
+func (u *{{ .LowerName }}Update) Offset(n int) *{{ .LowerName }}Update {
+    u.builder.Offset(n)
+    return u
+}
+
+func (u *{{ .LowerName }}Update) Limit(n int) *{{ .LowerName }}Update {
+    u.builder.Limit(n)
+    return u
+}
+
+func (u *{{ $.LowerName }}Update) Save() (int64, error) {
+	sq, args, err := u.builder.Limit(1).Update(u.values)
+	if err != nil {
+		return 0, err
+	}
+
+	res, err := u.db.Exec(sq, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	return res.RowsAffected()
+}

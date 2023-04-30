@@ -1,0 +1,198 @@
+package gen
+
+import (
+    "database/sql"
+	"errors"
+    "fmt"
+    "log"
+
+    "{{ .PkgPath }}/internal/model"
+
+    "github.com/maxshaw/orm"
+    "github.com/maxshaw/orm/qb"
+
+    {{range .Model.Imports}} {{"\n"}}{{print .}}{{end}}
+)
+
+var {{ .LowerName }}Columns = []string{ "{{ .Select }}" }
+
+type {{ .LowerName }}Query struct {
+    db    orm.Executor
+    table string
+
+    builder *orm.Builder
+
+    hasColumns bool
+
+    {{range $name, $rel := .Model.Relations }} with{{ $name }} *struct {
+        query *{{ $rel.Target | lowerFirst }}Query
+        slice bool
+    }
+    {{end}}
+}
+
+func new{{ .Name }}Query(db orm.Executor, table string) *{{ .LowerName }}Query {
+    return &{{ .LowerName }}Query{db: db, table: table, builder: orm.NewBuilder(db, table)}
+}
+
+{{range $name, $rel := .Model.Relations }}
+func (q *{{ $.LowerName }}Query) With{{ $name }}(fns ...func(q *{{ $rel.Target | lowerFirst }}Query)) *{{ $.LowerName }}Query {
+    q.with{{ $name }} = &struct {
+        query *{{ $rel.Target | lowerFirst }}Query
+        slice bool
+    }{
+        query: new{{ $rel.Target }}Query(q.db, (model.{{ $rel.Target }}{}).TableName()),
+        slice: {{ $rel.Slice }},
+    }
+    for _, f := range fns {
+        f(q.with{{ $name }}.query)
+    }
+    return q
+}
+{{end}}
+
+func (q *{{ .LowerName }}Query) FindByPK(v {{ .Model.PK.Type }}) (*model.{{ .Name }}, error) {
+    q.builder.Where(qb.Eq({{ .Name }}PK, v)).Limit(1)
+    return q.First()
+}
+
+func (q *{{ .LowerName }}Query) Select(fields ...{{ .Name }}Field) *{{ .LowerName }}Query {
+    var cols []string
+    for _, f := range fields {
+        if f.Valid() {
+            cols = append(cols, string(f))
+        } else {
+            log.Printf("[{{ .LowerName }}Query] %s is not a valid column\n", f)
+        }
+    }
+    q.hasColumns = len(cols) > 0
+    q.builder.Select(cols...)
+    return q
+}
+
+func (q *{{ .LowerName }}Query) Where(a ...qb.Expr) *{{ .LowerName }}Query {
+    q.builder.Where(a...)
+    return q
+}
+
+func (q *{{ .LowerName }}Query) Offset(n int) *{{ .LowerName }}Query {
+    q.builder.Offset(n)
+    return q
+}
+
+func (q *{{ .LowerName }}Query) Limit(n int) *{{ .LowerName }}Query {
+    q.builder.Limit(n)
+    return q
+}
+
+func (q *{{ .LowerName }}Query) First() (*model.{{ .Name }}, error) {
+    items, err := q.Limit(1).All()
+    if err != nil {
+        return nil, err
+    }
+    if len(items) > 0 {
+        return items[0], nil
+    }
+    return nil, nil
+}
+
+func (q *{{ .LowerName }}Query) All() ([]*model.{{ .Name }}, error) {
+    var defaultCols []string
+    if !q.hasColumns {
+        defaultCols = {{ .LowerName }}Columns
+    }
+
+    sq, args, err := q.builder.Select(defaultCols...).ToSQL()
+    if err != nil {
+        return nil, err
+    }
+
+    rows, err := q.db.Query(sq, args...)
+    if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+        return nil, err
+    }
+    return q.scan(rows)
+}
+
+func (q *{{ .LowerName }}Query) scan(rows *sql.Rows) ([]*model.{{ .Name }}, error) {
+    defer rows.Close()
+
+    cols, err := rows.Columns()
+    if err != nil {
+        return nil, err
+    }
+
+      var items []*model.{{ .Name }}
+    for rows.Next() {
+        item, values := q.values(cols)
+        if err := rows.Scan(values...); err != nil {
+            return nil, fmt.Errorf("[{{ .LowerName }}Query] scan error: %w", err)
+        }
+        items = append(items, item)
+    }
+
+    {{if .Model.Relations}}
+    if len(items) > 0 { {{range $name, $rel := .Model.Relations }}
+        if q.with{{ $name }} != nil {
+            var ids []any
+            for _, item := range items {
+                ids = append(ids, item.{{ $rel.FirstField }})
+            }
+
+            children, err := q.with{{ $name }}.query.Where(qb.In("`"+ q.with{{ $name }}.query.table +"`.`{{ $rel.Second }}`", ids)).All()
+            if err != nil {
+                return nil, err
+            }
+
+            for _, item := range items {
+                for _, child := range children {
+                    if item.{{ $rel.FirstField }} == child.{{ $rel.SecondField }} {
+                        {{if $rel.Slice }} item.{{ $name }} = append(item.{{ $name }}, child)
+                        {{else}} item.{{ $name }} = child
+                            break {{end}}
+                    }
+                }
+            }
+        }
+        {{end}} }
+    {{end}}
+
+    return items, nil
+}
+
+func (q *{{ .LowerName }}Query) values(cols []string) (*model.{{ .Name }}, []any) {
+    var (
+        item model.{{ .Name }}
+        values []any
+    )
+    for _, col := range cols { {{ range $field := .Model.Fields }}
+        if col == "{{ $field.Column }}" {
+            values = append(values, &item.{{ $field.Name }})
+            continue
+        }
+    {{end}} }
+    return &item, values
+}
+
+func {{ .Name }}Validate(m *model.{{ .Name }}) *orm.ValidationError {
+    {{range .Model.Validates}} {{print "" .}} {{end}} return nil
+}
+
+func {{ .LowerName }}Validate(m *model.{{ .Name }}) error {
+    {{range $f := .Model.Fields}}
+        {{if $f.Default }}
+            if m.{{ $f.Name }}{{ $f.Default.Initial }} {
+                m.{{ $f.Name }} = {{ $f.Default.Value }}
+            }
+        {{end}}
+    {{end}}
+
+    if err := {{ .Name }}Validate(m); err != nil {
+        return fmt.Errorf("[{{ .Name }}Request]: %s - %w", err.Field, err)
+    }
+
+    return nil
+}

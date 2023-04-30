@@ -1,0 +1,72 @@
+package gen
+
+import (
+    "{{ .PkgPath }}/internal/model"
+
+    "github.com/maxshaw/orm"
+    "github.com/maxshaw/orm/qb"
+)
+
+type {{ .Name }}Field string
+
+const (
+    {{ range .Model.Fields }} {{ "\n" }} {{ $.Name }}Field{{ .Name }} = "{{ .Column }}" {{end}}
+
+	{{ .Name }}PK = {{ .Name }}Field{{ .Model.PK.Name }}
+)
+
+func (f {{ .Name }}Field) Valid() bool {
+    switch f {
+    case "{{ join .Columns `", "` }}":
+        return true
+    }
+    return false
+}
+
+type {{ .LowerName }} struct {
+    db    orm.Executor
+    table string
+}
+
+func (m *{{ .LowerName }}) Query() *{{ .LowerName }}Query {
+    return new{{ .Name }}Query(m.db, m.table)
+}
+
+func (m *{{ .LowerName }}) Create(item *model.{{ .Name }}) (*model.{{ .Name }}, error) {
+    if err := {{ .LowerName }}Validate(item); err != nil {
+        return nil, err
+    }
+
+    sq, args, err := orm.NewBuilder(m.db, m.table).Insert(qb.H{
+    {{range $f := .Model.Fields }} {{ "\n" }} "{{ $f.Column }}": item.{{ $f.Name }},{{end}} })
+    if err != nil {
+        return nil, err
+    }
+
+    {{if .Model.PK.Auto}}
+        res, err := m.db.Exec(sq, args...)
+        if err != nil {
+            return nil, err
+        }
+    
+        if id, err := res.LastInsertId(); err != nil {
+            return nil, err
+        } else {
+            item.{{ .Model.PK.Name }} = {{ .Model.PK.Type }}(id)
+            return item, nil
+        }
+    {{else}}
+        if _, err := m.db.Exec(sq, args...); err != nil {
+            return nil, err
+        }
+        return item, nil
+    {{end}}
+}
+
+func (m *{{ .LowerName }}) Update() *{{ .LowerName }}Update {
+    return &{{ .LowerName }}Update{db: m.db, builder: orm.NewBuilder(m.db, m.table), values: make(qb.H, {{ .Model.Fields | len}})}
+}
+
+func (m *{{ .LowerName }}) UpdateByPK(v {{ .Model.PK.Type }}) *{{ .LowerName }}Update {
+    return &{{ .LowerName }}Update{db: m.db, builder: orm.NewBuilder(m.db, m.table).Where(qb.Eq({{ .Name }}PK, v)), values: make(qb.H, {{ .Model.Fields | len}})}
+}

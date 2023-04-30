@@ -1,0 +1,90 @@
+package gen
+
+import (
+	"database/sql"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/maxshaw/orm"
+
+	"{{ .PkgPath }}/internal/model"
+)
+
+type client struct {
+	executor orm.Executor
+	{{range $m := .Models }} {{ "\n" }} {{ $m }} *{{ $m | lowerFirst }}{{end}}
+}
+
+type Client struct {
+	client
+	db *sql.DB
+}
+
+type Tx struct {
+	client
+	db *sql.Tx
+}
+
+func Open(dsn string) (*Client, error) {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{db: db, client: client{executor: db, {{range $m := .Models }} {{ "\n" }} {{ $m }}: &{{ $m | lowerFirst }}{db: db, table: (model.{{$m}}{}).TableName()},{{end}} }}, nil
+}
+
+func (c *Client) Tx(block func(tx *Tx) error) error {
+	if block == nil {
+		return nil
+	}
+
+	tx, err := c.Begin()
+	if err != nil {
+		return err
+	}
+
+	err = block(tx)
+
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (c *Client) Begin() (*Tx, error) {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Tx{
+		db: tx,
+		client: client{executor: tx, {{range $m := .Models }} {{ "\n" }} {{ $m }}: &{{ $m | lowerFirst }}{db: tx, table: (model.{{$m}}{}).TableName()},{{end}} },
+	}, nil
+}
+
+func (c *Client) Raw() *sql.DB {
+	return c.db
+}
+
+func (c *Client) Close() error {
+	return c.db.Close()
+}
+
+func (tx *Tx) Raw() *sql.Tx {
+	return tx.db
+}
+
+func (tx *Tx) Commit() error {
+	return tx.db.Commit()
+}
+
+func (tx *Tx) Rollback() error {
+	return tx.db.Rollback()
+}
+
+func (c *client) Table(name string) *orm.Builder {
+	return orm.NewBuilder(c.executor, name)
+}
