@@ -12,18 +12,18 @@ import (
 	"go/token"
 	"log"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"text/template"
 	"unicode"
 
 	"github.com/samber/lo"
+	"golang.org/x/tools/go/packages"
 )
 
 const (
-	target  = "./gen/"
-	pkgPath = "go/demo"
+	targetPath = "./gen/"
+	modelsPath = "./internal/model"
 )
 
 //go:embed template/*
@@ -165,6 +165,16 @@ func initialValue(typ, val string) string {
 var fset = token.NewFileSet()
 
 func Gen() error {
+	loaded, err := packages.Load(&packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles,
+		Dir:  modelsPath,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pkg := loaded[0]
+
 	t, err := template.New("gen").Funcs(template.FuncMap{
 		"lowerField": lowerField,
 		"lowerFirst": lowerFirst,
@@ -174,23 +184,19 @@ func Gen() error {
 		return err
 	}
 
-	files, err := filepath.Glob("./internal/model/*.go")
-	if err != nil || len(files) == 0 {
-		return errors.New("model folder is empty")
+	if stat, err := os.Stat(targetPath); os.IsNotExist(err) || !stat.IsDir() {
+		_ = os.Mkdir(targetPath, 0777)
 	}
 
-	if stat, err := os.Stat(target); os.IsNotExist(err) || !stat.IsDir() {
-		_ = os.Mkdir("./gen", 0777)
-	}
+	var models = make(map[string]*model, len(pkg.GoFiles))
 
-	models := make(map[string]*model)
-	for _, file := range files {
+	for _, file := range pkg.GoFiles {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
 
-		f, err := parser.ParseFile(fset, file, string(src), parser.ParseComments)
+		f, err := parser.ParseFile(fset, file, string(src), 0)
 		if err != nil {
 			return err
 		}
@@ -253,41 +259,27 @@ func Gen() error {
 	}
 
 	execTpl(t, "client", "client", map[string]any{
-		"PkgPath": pkgPath,
+		"PkgPath": pkg.PkgPath,
 		"Models":  names,
 	})
 
 	for _, model := range models {
-		cols := lo.Map(model.Fields, func(f field, _ int) string { return f.Column })
+		var (
+			cols = lo.Map(model.Fields, func(f field, _ int) string { return f.Column })
+			name = strings.ToLower(model.Name)
+			data = map[string]any{
+				"PkgPath":   pkg.PkgPath,
+				"Name":      model.Name,
+				"LowerName": lowerFirst(model.Name),
+				"Model":     model,
+				"Columns":   cols,
+				"Select":    strings.Join(cols, `", "`),
+			}
+		)
 
-		name := strings.ToLower(model.Name)
-
-		execTpl(t, name, "model", map[string]any{
-			"PkgPath":   pkgPath,
-			"Name":      model.Name,
-			"LowerName": lowerFirst(model.Name),
-			"Model":     model,
-			"Columns":   cols,
-			"Select":    strings.Join(cols, `", "`),
-		})
-
-		execTpl(t, name+"query", "query", map[string]any{
-			"PkgPath":   pkgPath,
-			"Name":      model.Name,
-			"LowerName": lowerFirst(model.Name),
-			"Model":     model,
-			"Columns":   cols,
-			"Select":    strings.Join(cols, `", "`),
-		})
-
-		execTpl(t, name+"update", "update", map[string]any{
-			"PkgPath":   pkgPath,
-			"Name":      model.Name,
-			"LowerName": lowerFirst(model.Name),
-			"Model":     model,
-			"Columns":   cols,
-			"Select":    strings.Join(cols, `", "`),
-		})
+		execTpl(t, name, "model", data)
+		execTpl(t, name+"query", "query", data)
+		execTpl(t, name+"update", "update", data)
 	}
 
 	return nil
@@ -305,7 +297,7 @@ func execTpl(t *template.Template, name, tpl string, args any) {
 		log.Fatal(err)
 	}
 
-	if err = os.WriteFile(target+name+".go", b, 0777); err != nil {
+	if err = os.WriteFile(targetPath+name+".go", b, 0777); err != nil {
 		log.Fatal(err)
 	}
 }

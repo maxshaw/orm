@@ -15,7 +15,7 @@ func (b *Builder) InsertMulti(values []qb.H) (string, []any, error) {
 	var sb strings.Builder
 
 	sb.WriteString("INSERT INTO ")
-	sb.WriteString(b.table)
+	sb.WriteString(qb.Quote(b.table, ""))
 	sb.WriteString(" (")
 
 	var (
@@ -34,7 +34,7 @@ func (b *Builder) InsertMulti(values []qb.H) (string, []any, error) {
 			for k, v := range value {
 				columns = append(columns, k)
 
-				sb.WriteString(k)
+				sb.WriteString(qb.Quote(k, ""))
 				vb.WriteString("?")
 
 				if col == count {
