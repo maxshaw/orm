@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
-	"go/printer"
 	"go/token"
 	"log"
 	"os"
@@ -19,10 +17,11 @@ import (
 
 	"github.com/samber/lo"
 	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/imports"
 )
 
 const (
-	targetPath = "./gen/"
+	targetPath = "./internal/gen/"
 	modelsPath = "./internal/model"
 )
 
@@ -67,6 +66,11 @@ type model struct {
 	Validates []string
 }
 
+var (
+	modelsPkgName string
+	modelsPkgPath string
+)
+
 func (m *model) AddImport(s string) {
 	if s == "" || lo.Contains(m.Imports, s) {
 		return
@@ -77,6 +81,35 @@ func (m *model) AddImport(s string) {
 	}
 
 	m.Imports = append(m.Imports, s)
+}
+
+type builtinType uint
+
+const (
+	_ builtinType = iota
+	typeInt
+	typeFloat
+	typeString
+	typeBool
+)
+
+func checkType(typ string) builtinType {
+	switch typ {
+	case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return typeInt
+
+	case "float32", "float64":
+		return typeFloat
+
+	case "bool":
+		return typeBool
+
+	case "string":
+		return typeString
+
+	default:
+		return 0
+	}
 }
 
 func isNumPK(typ string) bool {
@@ -135,11 +168,8 @@ func checkValue(typ string) (string, string) {
 		if strings.HasPrefix(typ, "*") {
 			return " == nil", "must be not null"
 		}
-
-		fmt.Printf("[typ] %s\n", typ)
+		return "", ""
 	}
-
-	return "", ""
 }
 
 func initialValue(typ, val string) string {
@@ -174,6 +204,8 @@ func Gen() error {
 	}
 
 	pkg := loaded[0]
+
+	modelsPkgName, modelsPkgPath = pkg.Name, pkg.PkgPath
 
 	t, err := template.New("gen").Funcs(template.FuncMap{
 		"lowerField": lowerField,
@@ -291,13 +323,16 @@ func execTpl(t *template.Template, name, tpl string, args any) {
 
 	src := out.Bytes()
 
-	b, err := format.Source(src)
+	// fmt.Printf("[BEFORE]\n%s\n\n", src)
+
+	after, err := imports.Process(targetPath+name+".go", src, &imports.Options{})
 	if err != nil {
-		fmt.Println(string(src))
 		log.Fatal(err)
 	}
 
-	if err = os.WriteFile(targetPath+name+".go", b, 0777); err != nil {
+	// fmt.Printf("[AFTER]\n%s\n\n", after)
+
+	if err = os.WriteFile(targetPath+name+".go", after, 0777); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -309,7 +344,9 @@ FL:
 			continue
 		}
 
-		f := field{Name: sf.Names[0].Name, Type: typeName(m, sf.Type, false)}
+		// fmt.Printf("%s: %s\n", sf.Names[0].Name, typeName(m, sf.Type, "", false))
+
+		f := field{Name: sf.Names[0].Name, Type: typeName(m, sf.Type, "", false)}
 
 		if sf.Tag != nil {
 			if tag := reflect.StructTag(strings.Trim(sf.Tag.Value, "`")).Get("db"); tag == "-" {
@@ -508,14 +545,54 @@ func firstFieldName(l *ast.FieldList) string {
 	return ""
 }
 
-func typeName(m *model, e ast.Expr, isPtr bool) string {
-	if e == nil {
+func ident(node ast.Expr) string {
+	if id, ok := node.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+func typeName(m *model, node ast.Expr, pkg string, isPtr bool) string {
+	if node == nil {
 		return ""
 	}
 
-	var sb strings.Builder
-	printer.Fprint(&sb, fset, e)
-	return sb.String()
+	switch x := node.(type) {
+	case *ast.Ident:
+		var name string
+		if typ := checkType(x.Name); typ == 0 {
+			if pkg == "" {
+				name = modelsPkgName + "." + x.Name
+			} else {
+				name = pkg + "." + x.Name
+			}
+		} else {
+			name = x.Name
+		}
+
+		if isPtr {
+			return "*" + name
+		}
+		return name
+
+	case *ast.SelectorExpr:
+		return typeName(m, x.Sel, ident(x.X), isPtr)
+
+	case *ast.ArrayType:
+		return "[]" + typeName(m, x.Elt, pkg, isPtr)
+
+	case *ast.IndexExpr:
+		wrapper := typeName(m, x.X, pkg, isPtr)
+		sub := typeName(m, x.Index, "", false)
+		return wrapper + "[" + sub + "]"
+
+	case *ast.StarExpr:
+		return typeName(m, x.X, pkg, true)
+
+	default:
+		log.Printf("[gen] unknown type: %#v\n", x)
+		return ""
+	}
 }
 
 func lowerFirst(s string) string {

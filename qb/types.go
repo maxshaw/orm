@@ -3,13 +3,11 @@ package qb
 import (
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
 )
 
 type JSONValue[T any] struct {
-	raw json.RawMessage
-	val *T
-
+	raw   []byte
+	val   *T
 	Valid bool
 }
 
@@ -32,27 +30,39 @@ func (j JSONValue[T]) Val() T {
 	return *j.val
 }
 
-// Scan implements the Scanner interface.
-func (j *JSONValue[T]) Scan(value any) error {
-	var err error
-	if value != nil {
-		if data, ok := value.([]byte); ok {
-			if err = j.UnmarshalJSON(data); err == nil {
+func (j *JSONValue[T]) unpack(b []byte) (err error) {
+	if b != nil {
+		var v T
+		if err = json.Unmarshal(b, &v); err == nil {
+			var (
+				bc  = len(b)
+				raw = make([]byte, bc)
+			)
+			if n := copy(raw, b); n == bc {
+				j.raw, j.val, j.Valid = raw, &v, true
 				return nil
 			}
 		}
 	}
-
 	j.raw, j.val, j.Valid = nil, nil, false
-	return err
+	return
+}
+
+// Scan implements the Scanner interface.
+func (j *JSONValue[T]) Scan(value any) error {
+	if b, ok := value.([]byte); ok {
+		return j.unpack(b)
+	}
+	j.raw, j.val, j.Valid = nil, nil, false
+	return nil
 }
 
 // Value implements the driver Valuer interface.
 func (j JSONValue[T]) Value() (driver.Value, error) {
-	if !j.Valid {
-		return nil, nil
+	if j.Valid {
+		return j.raw, nil
 	}
-	return j.raw, nil
+	return nil, nil
 }
 
 // MarshalJSON returns m as the JSON encoding of m.
@@ -64,17 +74,6 @@ func (j JSONValue[T]) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON sets *m to a copy of data.
-func (j *JSONValue[T]) UnmarshalJSON(data []byte) error {
-	if j == nil {
-		return errors.New("JSONValue[T]: UnmarshalJSON on nil pointer")
-	}
-
-	var val T
-	if err := json.Unmarshal(data, &val); err != nil {
-		j.raw, j.val, j.Valid = nil, nil, false
-		return nil
-	}
-
-	j.raw, j.val, j.Valid = data, &val, true
-	return nil
+func (j *JSONValue[T]) UnmarshalJSON(b []byte) error {
+	return j.unpack(b)
 }

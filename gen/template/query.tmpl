@@ -16,7 +16,7 @@ import (
 
 var {{ .LowerName }}Columns = []string{ "{{ .Select }}" }
 
-type {{ .LowerName }}Query struct {
+type {{ .Name }}Query struct {
     db    orm.Executor
     table string
 
@@ -25,20 +25,20 @@ type {{ .LowerName }}Query struct {
     hasColumns bool
 
     {{range $name, $rel := .Model.Relations }} with{{ $name }} *struct {
-        query *{{ $rel.Target | lowerFirst }}Query
+        query *{{ $rel.Target }}Query
         slice bool
     }
     {{end}}
 }
 
-func new{{ .Name }}Query(db orm.Executor, table string) *{{ .LowerName }}Query {
-    return &{{ .LowerName }}Query{db: db, table: table, builder: orm.NewBuilder(db, table)}
+func new{{ .Name }}Query(db orm.Executor, table string) *{{ .Name }}Query {
+    return &{{ .Name }}Query{db: db, table: table, builder: orm.NewBuilder(db, table)}
 }
 
 {{range $name, $rel := .Model.Relations }}
-func (q *{{ $.LowerName }}Query) With{{ $name }}(fns ...func(q *{{ $rel.Target | lowerFirst }}Query)) *{{ $.LowerName }}Query {
+func (q *{{ $.Name }}Query) With{{ $name }}(fns ...func(q *{{ $rel.Target }}Query)) *{{ $.Name }}Query {
     q.with{{ $name }} = &struct {
-        query *{{ $rel.Target | lowerFirst }}Query
+        query *{{ $rel.Target }}Query
         slice bool
     }{
         query: new{{ $rel.Target }}Query(q.db, (model.{{ $rel.Target }}{}).TableName()),
@@ -51,18 +51,18 @@ func (q *{{ $.LowerName }}Query) With{{ $name }}(fns ...func(q *{{ $rel.Target |
 }
 {{end}}
 
-func (q *{{ .LowerName }}Query) FindByPK(v {{ .Model.PK.Type }}) (*model.{{ .Name }}, error) {
+func (q *{{ .Name }}Query) FindByPK(v {{ .Model.PK.Type }}) (*model.{{ .Name }}, error) {
     q.builder.Where(qb.Eq({{ .Name }}PK, v)).Limit(1)
     return q.First()
 }
 
-func (q *{{ .LowerName }}Query) Select(fields ...{{ .Name }}Field) *{{ .LowerName }}Query {
+func (q *{{ .Name }}Query) Select(fields ...{{ .Name }}Field) *{{ .Name }}Query {
     var cols []string
     for _, f := range fields {
         if f.Valid() {
             cols = append(cols, string(f))
         } else {
-            log.Printf("[{{ .LowerName }}Query] %s is not a valid column\n", f)
+            log.Printf("[{{ .Name }}Query] %s is not a valid column\n", f)
         }
     }
     q.hasColumns = len(cols) > 0
@@ -70,22 +70,46 @@ func (q *{{ .LowerName }}Query) Select(fields ...{{ .Name }}Field) *{{ .LowerNam
     return q
 }
 
-func (q *{{ .LowerName }}Query) Where(a ...qb.Expr) *{{ .LowerName }}Query {
+func (q *{{ .Name }}Query) Where(a ...qb.Expr) *{{ .Name }}Query {
     q.builder.Where(a...)
     return q
 }
 
-func (q *{{ .LowerName }}Query) Offset(n int) *{{ .LowerName }}Query {
+func (q *{{ .Name }}Query) GroupBy(fields ...{{ .Name }}Field) *{{ .Name }}Query {
+    var cols []string
+    for _, f := range fields {
+        cols = append(cols, string(f))
+    }
+    q.builder.GroupBy(cols...)
+    return q
+}
+
+func (q *{{ .Name }}Query) Having(a ...qb.Expr) *{{ .Name }}Query {
+    q.builder.Having(a...)
+    return q
+}
+
+func (q *{{ .Name }}Query) OrderBy(f {{ .Name }}Field, sortBy ...qb.SortBy) *{{ .Name }}Query {
+    q.builder.OrderBy(string(f), sortBy...)
+    return q
+}
+
+func (q *{{ .Name }}Query) OrderByRaw(raw string) *{{ .Name }}Query {
+    q.builder.OrderByRaw(raw)
+    return q
+}
+
+func (q *{{ .Name }}Query) Offset(n int) *{{ .Name }}Query {
     q.builder.Offset(n)
     return q
 }
 
-func (q *{{ .LowerName }}Query) Limit(n int) *{{ .LowerName }}Query {
+func (q *{{ .Name }}Query) Limit(n int) *{{ .Name }}Query {
     q.builder.Limit(n)
     return q
 }
 
-func (q *{{ .LowerName }}Query) First() (*model.{{ .Name }}, error) {
+func (q *{{ .Name }}Query) First() (*model.{{ .Name }}, error) {
     items, err := q.Limit(1).All()
     if err != nil {
         return nil, err
@@ -96,7 +120,7 @@ func (q *{{ .LowerName }}Query) First() (*model.{{ .Name }}, error) {
     return nil, nil
 }
 
-func (q *{{ .LowerName }}Query) All() ([]*model.{{ .Name }}, error) {
+func (q *{{ .Name }}Query) All() ([]*model.{{ .Name }}, error) {
     var defaultCols []string
     if !q.hasColumns {
         defaultCols = {{ .LowerName }}Columns
@@ -117,7 +141,7 @@ func (q *{{ .LowerName }}Query) All() ([]*model.{{ .Name }}, error) {
     return q.scan(rows)
 }
 
-func (q *{{ .LowerName }}Query) scan(rows *sql.Rows) ([]*model.{{ .Name }}, error) {
+func (q *{{ .Name }}Query) scan(rows *sql.Rows) ([]*model.{{ .Name }}, error) {
     defer rows.Close()
 
     cols, err := rows.Columns()
@@ -129,18 +153,25 @@ func (q *{{ .LowerName }}Query) scan(rows *sql.Rows) ([]*model.{{ .Name }}, erro
     for rows.Next() {
         item, values := q.values(cols)
         if err := rows.Scan(values...); err != nil {
-            return nil, fmt.Errorf("[{{ .LowerName }}Query] scan error: %w", err)
+            return nil, fmt.Errorf("[{{ .Name }}Query] scan error: %w", err)
         }
         items = append(items, item)
     }
 
     {{if .Model.Relations}}
-    if len(items) > 0 { {{range $name, $rel := .Model.Relations }}
+    total := len(items)
+    if total > 0 {
+    {{range $name, $rel := .Model.Relations }} {{ "\n" }}
         if q.with{{ $name }} != nil {
-            var ids []any
-            for _, item := range items {
-                ids = append(ids, item.{{ $rel.FirstField }})
-            }
+            idsSet := make(map[any]struct{}, total)
+			for _, item := range items {
+				idsSet[item.{{ .FirstField }}] = struct{}{}
+			}
+
+			ids := make([]any, 0, len(idsSet))
+			for id := range idsSet {
+				ids = append(ids, id)
+			}
 
             children, err := q.with{{ $name }}.query.Where(qb.In("`"+ q.with{{ $name }}.query.table +"`.`{{ $rel.Second }}`", ids)).All()
             if err != nil {
@@ -163,7 +194,7 @@ func (q *{{ .LowerName }}Query) scan(rows *sql.Rows) ([]*model.{{ .Name }}, erro
     return items, nil
 }
 
-func (q *{{ .LowerName }}Query) values(cols []string) (*model.{{ .Name }}, []any) {
+func (q *{{ .Name }}Query) values(cols []string) (*model.{{ .Name }}, []any) {
     var (
         item model.{{ .Name }}
         values []any

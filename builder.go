@@ -7,11 +7,16 @@ type Builder struct {
 
 	table string
 
-	cols  []string
-	exprs []qb.Expr
 	args  []any
+	exprs []qb.Expr
+
+	cols []string
 
 	offset, limit int
+
+	order, group string
+
+	having []qb.Expr
 
 	joins []string
 }

@@ -60,14 +60,12 @@ func (e subExpr) Build(table string) (string, []any, error) {
 
 func Quote(a, b string) string {
 	if b == "" {
-		return fmt.Sprintf("`%s`", a)
+		return fmt.Sprintf("`%s`", strings.Trim(a, "`"))
 	}
-
-	b = strings.TrimPrefix(b, "`")
 
 	if strings.Contains(b, ".") {
-		return b
+		return "`" + strings.Trim(b, "`") + "`"
 	}
 
-	return fmt.Sprintf("`%s`.`%s`", a, b)
+	return fmt.Sprintf("`%s`.`%s`", strings.Trim(a, "`"), strings.Trim(b, "`"))
 }

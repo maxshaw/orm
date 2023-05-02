@@ -28,7 +28,7 @@ type {{ .LowerName }} struct {
     table string
 }
 
-func (m *{{ .LowerName }}) Query() *{{ .LowerName }}Query {
+func (m *{{ .LowerName }}) Query() *{{ .Name }}Query {
     return new{{ .Name }}Query(m.db, m.table)
 }
 

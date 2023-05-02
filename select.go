@@ -65,15 +65,45 @@ func (b *Builder) join(typ, target, first, second string) *Builder {
 }
 
 func (b *Builder) reset() *Builder {
+	b.args = []any{}
+
 	b.cols = []string{}
 	b.exprs = []qb.Expr{}
-	b.args = []any{}
+
+	b.group = ""
+	b.having = []qb.Expr{}
+
+	b.order = ""
 
 	b.offset = -1
 	b.limit = -1
 
 	b.joins = []string{}
 
+	return b
+}
+
+func (b *Builder) OrderBy(col string, sortBy ...qb.SortBy) *Builder {
+	if col == "" {
+		b.order = ""
+		return b
+	}
+
+	var raw = qb.Quote(b.table, col)
+	if len(sortBy) > 0 {
+		if sortBy[0] == qb.Ascend {
+			raw += " ASC"
+		} else {
+			raw += " DESC"
+		}
+	}
+
+	b.order = raw
+	return b
+}
+
+func (b *Builder) OrderByRaw(raw string) *Builder {
+	b.order = raw
 	return b
 }
 
@@ -86,6 +116,23 @@ func (b *Builder) Select(cols ...string) *Builder {
 
 func (b *Builder) Where(a ...qb.Expr) *Builder {
 	b.exprs = append(b.exprs, a...)
+	return b
+}
+
+func (b *Builder) GroupBy(cols ...string) *Builder {
+	var group string
+	for i, col := range cols {
+		if i > 0 {
+			group += ", "
+		}
+		group += qb.Quote(b.table, col)
+	}
+	b.group = group
+	return b
+}
+
+func (b *Builder) Having(a ...qb.Expr) *Builder {
+	b.having = append(b.having, a...)
 	return b
 }
 
@@ -119,9 +166,8 @@ func (b *Builder) ToSQL() (string, []any, error) {
 		sb.WriteString("`")
 	}
 
-	sb.WriteString(" FROM `")
-	sb.WriteString(b.table)
-	sb.WriteString("`")
+	sb.WriteString(" FROM ")
+	sb.WriteString(qb.Quote(b.table, ""))
 
 	for _, join := range b.joins {
 		sb.WriteString(join)
@@ -133,7 +179,29 @@ func (b *Builder) ToSQL() (string, []any, error) {
 		if cond != "" {
 			sb.WriteString(" WHERE ")
 			sb.WriteString(cond)
+			b.args = append(b.args, whereArgs...)
 		}
+	}
+
+	if b.group != "" {
+		sb.WriteString(" GROUP BY ")
+		sb.WriteString(b.group)
+
+		having, havArgs, err := qb.Build(b.table, "AND", false, b.having...)
+		if err != nil {
+			return "", nil, err
+		}
+
+		if having != "" {
+			sb.WriteString(" HAVING ")
+			sb.WriteString(having)
+			b.args = append(b.args, havArgs...)
+		}
+	}
+
+	if b.order != "" {
+		sb.WriteString(" ORDER BY ")
+		sb.WriteString(b.order)
 	}
 
 	if b.limit > -1 {
@@ -147,7 +215,7 @@ func (b *Builder) ToSQL() (string, []any, error) {
 		sb.WriteString(strconv.Itoa(b.limit))
 	}
 
-	sq, args := sb.String(), append(b.args, whereArgs...)
+	sq, args := sb.String(), b.args
 
 	log.Printf("[SQL] %s\n", sq)
 	log.Printf("[SQL] %+v\n", args)
