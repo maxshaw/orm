@@ -91,6 +91,7 @@ const (
 	typeFloat
 	typeString
 	typeBool
+	typeAny
 )
 
 func checkType(typ string) builtinType {
@@ -106,6 +107,9 @@ func checkType(typ string) builtinType {
 
 	case "string":
 		return typeString
+
+	case "any", "interface{}":
+		return typeAny
 
 	default:
 		return 0
@@ -161,7 +165,7 @@ func checkValue(typ string) (string, string) {
 	case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64":
 		return " == 0", "must be not zero"
 
-	case "time.Time", "*time.Time":
+	case "types.Time", "*types.Time", "time.Time", "*time.Time":
 		return ".IsZero()", "not a valid time"
 
 	default:
